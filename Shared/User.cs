@@ -22,5 +22,9 @@ namespace Shared
         public string Salt { get; set; }
         public DateTime DateCreated { get; set; }
         public string? AboutMe { get; set; }
+        public Guid EmailVerificationGuid { get; set; }
+        public DateTime? DateEmailVerified { get; set; }
+        public Guid PasswordResetGuid { get; set; }
+        public DateTime? PasswordResetRequestExpiration { get; set; }
     }
 }

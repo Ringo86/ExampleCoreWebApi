@@ -6,6 +6,7 @@ using Microsoft.IdentityModel.Tokens;
 using Shared;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace ExampleCoreWebAPI.Controllers
@@ -37,7 +38,7 @@ namespace ExampleCoreWebAPI.Controllers
                     var jwtKeyBytes = Encoding.ASCII.GetBytes(config["Jwt:Key"]);
 
                     List<Claim> claims = new List<Claim>();
-
+                    //using var rsa = RSA.Create();
                     var secretKey = new SymmetricSecurityKey(jwtKeyBytes);
                     //TODO: in the future change to RS256 asymmetric encryption for improved security
                     var signinCredentials = new SigningCredentials(secretKey, SecurityAlgorithms.HmacSha256);
@@ -78,19 +79,80 @@ namespace ExampleCoreWebAPI.Controllers
                 Email = login.Email,
                 PasswordHash = passwordHash,
                 Salt = userSalt,
-                DateCreated = DateTime.Now
+                DateCreated = DateTime.Now,
+                EmailVerificationGuid = Guid.NewGuid()
             });
             await dataContext.SaveChangesAsync();
             return Ok();
         }
 
-        //ONLY UNCOMMENT WHEN YOU WANT TO CLEAR USERS
-        [HttpPost, Route("deletealllogins")]
-        public async Task<IActionResult> DeleteAllLogins()
+        [HttpPost, Route("verifyEmail")]
+        public async Task<IActionResult> VerifyEmail(Guid secretGuid)
         {
-            await dataContext.Users.ExecuteDeleteAsync();
+            //lookup guid in DB and flag account as email verified
+            var user = await dataContext.Users.FirstOrDefaultAsync(u => u.EmailVerificationGuid.Equals(secretGuid));
+            if (user == null)//TODO: maybe waste some time here for security since the email verification request was not from a valid source
+                return StatusCode(400);
+
+            user.DateEmailVerified = DateTime.Now;
+            await dataContext.SaveChangesAsync();
             return Ok();
         }
+
+        [HttpPost, Route("RequestPasswordReset")]
+        public async Task<IActionResult> RequestPasswordReset(string email)
+        {
+            //lookup email in DB and flag for temporary reset with emailed Guid
+            var user = await dataContext.Users.FirstOrDefaultAsync(u => u.Email.Equals(email));
+            if (user == null)
+                return Ok();//return OK whether or not the user account was found. Prevent confirming accounts exist
+
+            //TODO: email user password reset link (to the client app? how to properly know the url without hard configuration?)
+            user.PasswordResetGuid = Guid.NewGuid();
+            user.PasswordResetRequestExpiration = DateTime.Now.AddMinutes(5); //give them 5 minutes to use the unique link
+            await dataContext.SaveChangesAsync();
+
+            return Ok();
+        }
+
+        [HttpPost, Route("ResetPassword")]
+        public async Task<IActionResult> ResetPassword(Guid passwordResetGuid, string newPassword)
+        {
+            var blankGuid = new Guid();
+            //lookup email in DB and flag for temporary reset with emailed Guid
+            var user = await dataContext.Users.FirstOrDefaultAsync(u =>
+                !u.PasswordResetGuid.Equals(blankGuid)
+                && u.PasswordResetGuid.Equals(passwordResetGuid) 
+                && u.PasswordResetRequestExpiration !=null 
+                && u.PasswordResetRequestExpiration < DateTime.Now);
+            if (user == null)//TODO: maybe waste some time here for security since the ResetPassword request was not from a valid source
+                return StatusCode(400);
+
+            //set new password hash, salt
+            string salt = Guid.NewGuid().ToString();
+            string pepper = GetPepper();
+            if (string.IsNullOrEmpty(pepper))
+                return StatusCode(500);//the user should not be informed that the pepper is misconfigured
+            string seasonedPassword = SeasonPassword(newPassword, salt, pepper);
+            string passwordHash = HashPassword(seasonedPassword);
+            user.PasswordHash = passwordHash;
+            user.Salt = salt;
+
+            //clear ability to reset password
+            user.PasswordResetGuid = blankGuid;
+            user.PasswordResetRequestExpiration = null;
+            await dataContext.SaveChangesAsync();
+            //TODO: email that the password was reset so they can know if this is is a breach
+            return Ok();
+        }
+
+        //ONLY UNCOMMENT WHEN YOU WANT TO CLEAR USERS
+        //[HttpPost, Route("deletealllogins")]
+        //public async Task<IActionResult> DeleteAllLogins()
+        //{
+        //    await dataContext.Users.ExecuteDeleteAsync();
+        //    return Ok();
+        //}
 
         private async Task<bool> VerifyLogin(Login login)
         {
