@@ -17,9 +17,7 @@ builder.Services.AddCors(options =>
         {
             policy.AllowAnyHeader()
             .AllowAnyMethod()
-            .AllowAnyOrigin();
-            //TODO: restrict CORS origins.  Resolve the issue that no requests being allowed even from a registered origin url and with appropriate request headers
-            //.WithOrigins("https://localhost/7106");
+            .WithOrigins("https://localhost:7106");
         });
 });
 
@@ -81,8 +79,6 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 var app = builder.Build();
 
-app.UseCors(ExampleAllowSpecificOrigins);
-
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
@@ -91,6 +87,9 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+//this has to be called in this specific order
+app.UseCors(ExampleAllowSpecificOrigins);
 
 app.UseAuthentication();
 
