@@ -1,4 +1,5 @@
 ﻿using Data;
+using Microsoft.AspNetCore.Cors;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -8,17 +9,18 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace ExampleCoreWebAPI.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
-    public class LoginController : ControllerBase
+    public class AccountController : ControllerBase
     {
         private readonly IConfiguration config;
         private readonly MainDataContext dataContext;
 
-        public LoginController(IConfiguration config, MainDataContext dataContext)
+        public AccountController(IConfiguration config, MainDataContext dataContext)
         {
             this.config = config;
             this.dataContext = dataContext;
@@ -49,7 +51,8 @@ namespace ExampleCoreWebAPI.Controllers
                         expires: DateTime.Now.AddMinutes(10),
                         signingCredentials: signinCredentials
                     );
-                    return Ok(new JwtSecurityTokenHandler().WriteToken(jwtSecurityToken));
+                    string token = new JwtSecurityTokenHandler().WriteToken(jwtSecurityToken);
+                    return Ok(JsonSerializer.Serialize(new { Token = token }));
                 }
             }
             catch
@@ -122,8 +125,8 @@ namespace ExampleCoreWebAPI.Controllers
             //lookup email in DB and flag for temporary reset with emailed Guid
             var user = await dataContext.Users.FirstOrDefaultAsync(u =>
                 !u.PasswordResetGuid.Equals(blankGuid)
-                && u.PasswordResetGuid.Equals(passwordResetGuid) 
-                && u.PasswordResetRequestExpiration !=null 
+                && u.PasswordResetGuid.Equals(passwordResetGuid)
+                && u.PasswordResetRequestExpiration != null
                 && u.PasswordResetRequestExpiration < DateTime.Now);
             if (user == null)//TODO: maybe waste some time here for security since the ResetPassword request was not from a valid source
                 return StatusCode(400);
