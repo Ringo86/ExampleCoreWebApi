@@ -17,7 +17,8 @@ namespace Shared
         
         [StringLength(450)]
         public string Email { get; set; }
-        public string Name { get; set; }
+        public string FirstName { get; set; }
+        public string LastName { get; set; }
         public string PasswordHash { get; set; }
         public string Salt { get; set; }
         public DateTime DateCreated { get; set; }

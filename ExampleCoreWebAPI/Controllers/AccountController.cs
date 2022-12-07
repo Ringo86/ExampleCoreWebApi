@@ -1,9 +1,11 @@
 ﻿using Data;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Cors;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.Net.Http.Headers;
 using Shared;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
@@ -19,6 +21,8 @@ namespace ExampleCoreWebAPI.Controllers
     {
         private readonly IConfiguration config;
         private readonly MainDataContext dataContext;
+
+        private const string BEARER_SPACE = "Bearer ";
 
         public AccountController(IConfiguration config, MainDataContext dataContext)
         {
@@ -40,7 +44,7 @@ namespace ExampleCoreWebAPI.Controllers
                     var jwtKeyBytes = Encoding.ASCII.GetBytes(config["Jwt:Key"]);
 
                     List<Claim> claims = new List<Claim>();
-                    //using var rsa = RSA.Create();
+                    claims.Add(new Claim("Email", login.Email));
                     var secretKey = new SymmetricSecurityKey(jwtKeyBytes);
                     //TODO: in the future change to RS256 asymmetric encryption for improved security
                     var signinCredentials = new SigningCredentials(secretKey, SecurityAlgorithms.HmacSha256);
@@ -78,7 +82,8 @@ namespace ExampleCoreWebAPI.Controllers
             string passwordHash = HashPassword(seasonedPassword);
             await dataContext.Users.AddAsync(new User()
             {
-                Name = $"{registration.FirstName} {registration.LastName}",
+                FirstName = registration.FirstName,
+                LastName = registration.LastName,
                 Email = registration.Email,
                 PasswordHash = passwordHash,
                 Salt = userSalt,
@@ -90,10 +95,54 @@ namespace ExampleCoreWebAPI.Controllers
             return Ok();
         }
 
-        [HttpPost, Route("UpdateRegistration")]
+        [HttpGet, Route("getRegistrationInfo")]
+        [Authorize]
+        public async Task<ActionResult<RegistrationInfo>> GetRegistrationInfo()
+        {
+            //Get token and verify this is the same account
+            var accessToken = Request.Headers[HeaderNames.Authorization];
+            string bearerHeader = accessToken.FirstOrDefault(t => t.StartsWith(BEARER_SPACE));
+            if (bearerHeader == null)
+                return BadRequest();
+            //This validation is redundant with authentication
+            var validationResult = await new JwtSecurityTokenHandler().ValidateTokenAsync(
+                    bearerHeader.Substring(BEARER_SPACE.Length),
+                    new TokenValidationParameters()
+                    {
+                        ValidateIssuer = true,
+                        ValidateAudience = true,
+                        ValidateLifetime = true,
+                        ValidateIssuerSigningKey = true,
+                        ValidIssuer = config["Jwt:Issuer"],
+                        ValidAudience = config["Jwt:Audience"],
+                        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(config["Jwt:Key"])),
+                        ClockSkew = TimeSpan.Zero
+                    });
+            if (!validationResult.IsValid)
+                return BadRequest(); //this should never happen unless authentication has failed
+
+            object emailClaimObject = validationResult.Claims["Email"];
+            if (emailClaimObject == null)
+                return BadRequest(); //this should never happen unless the email isn't put in the claims anymore
+
+            string email = (string)emailClaimObject;
+            var foundUser = dataContext.Users.FirstOrDefault(u => u.Email == email);
+            if (foundUser == null)
+                return BadRequest();
+
+            //return only the appropriate fields
+            return new RegistrationInfo()
+            {
+                Email = foundUser.Email,
+                FirstName = foundUser.FirstName,
+                LastName = foundUser.LastName
+            };
+        }
+
+        [HttpPut, Route("updateRegistration")]
+        [Authorize]
         public async Task<IActionResult> UpdateRegistration(RegisterUpdate registration)
         {
-            string userSalt = Guid.NewGuid().ToString();
             string pepper = GetPepper();
             if (string.IsNullOrEmpty(pepper))
                 return StatusCode(500);//the user should not be informed that the pepper is misconfigured
@@ -101,26 +150,32 @@ namespace ExampleCoreWebAPI.Controllers
             //Check if user with email exists
             var foundUser = await dataContext.Users.FirstOrDefaultAsync(u => u.Email == registration.Email);
             if (foundUser == null)
-                return StatusCode(404);//TODO: consider a different response when update registration is called with an invalid email
+                return BadRequest();
 
             //verify old password
             string seasonedLoginPassword = SeasonPassword(registration.OldPassword, foundUser.Salt, pepper);
             if (!BCrypt.Net.BCrypt.Verify(seasonedLoginPassword, foundUser.PasswordHash))
-                return StatusCode(400);//TODO: consider a different response code for invalid password in update registration request
-
+                return BadRequest();
 
             //apply update request
-            string seasonedPassword = SeasonPassword(registration.NewPassword, userSalt, pepper);
-            string passwordHash = HashPassword(seasonedPassword);
-            foundUser.PasswordHash = passwordHash;
-            foundUser.Salt = userSalt;
-            foundUser.Name = $"{registration.FirstName} {registration.LastName}";
+            //TODO: validate new password complexity
+            if (!string.IsNullOrEmpty(registration.NewPassword))
+            {
+                string userSalt = Guid.NewGuid().ToString();
+                string seasonedPassword = SeasonPassword(registration.NewPassword, userSalt, pepper);
+                string passwordHash = HashPassword(seasonedPassword);
+                foundUser.PasswordHash = passwordHash;
+                foundUser.Salt = userSalt;
+            }
+            foundUser.FirstName = registration.FirstName;
+            foundUser.LastName = registration.LastName;
             dataContext.Users.Update(foundUser);
             await dataContext.SaveChangesAsync();
             return Ok();
         }
 
         [HttpPost, Route("verifyEmail")]
+        [Authorize]
         public async Task<IActionResult> VerifyEmail(Guid secretGuid)
         {
             //lookup guid in DB and flag account as email verified
@@ -182,6 +237,7 @@ namespace ExampleCoreWebAPI.Controllers
 
         //ONLY UNCOMMENT WHEN YOU WANT TO CLEAR USERS
         //[HttpPost, Route("deletealllogins")]
+        //[Authorize]
         //public async Task<IActionResult> DeleteAllLogins()
         //{
         //    await dataContext.Users.ExecuteDeleteAsync();
