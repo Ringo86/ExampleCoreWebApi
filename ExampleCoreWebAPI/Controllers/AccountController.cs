@@ -62,8 +62,8 @@ namespace ExampleCoreWebAPI.Controllers
             return Unauthorized();
         }
 
-        [HttpPost, Route("createlogin")]
-        public async Task<IActionResult> CreateLogin(Login login, string name)
+        [HttpPost, Route("register")]
+        public async Task<IActionResult> Register(RegisterNewAccount registration)
         {
             string userSalt = Guid.NewGuid().ToString();
             string pepper = GetPepper();
@@ -71,20 +71,51 @@ namespace ExampleCoreWebAPI.Controllers
                 return StatusCode(500);//the user should not be informed that the pepper is misconfigured
 
             //Check if user with email exists
-            if (await dataContext.Users.AnyAsync(u => u.Email == login.Email))
+            if (await dataContext.Users.AnyAsync(u => u.Email == registration.Email))
                 return StatusCode(409, "A user with that email already exists");//409 = conflict
 
-            string seasonedPassword = SeasonPassword(login.Password, userSalt, pepper);
+            string seasonedPassword = SeasonPassword(registration.Password, userSalt, pepper);
             string passwordHash = HashPassword(seasonedPassword);
-            await dataContext.Users.AddAsync(new Shared.User()
+            await dataContext.Users.AddAsync(new User()
             {
-                Name = name,
-                Email = login.Email,
+                Name = $"{registration.FirstName} {registration.LastName}",
+                Email = registration.Email,
                 PasswordHash = passwordHash,
                 Salt = userSalt,
                 DateCreated = DateTime.Now,
-                EmailVerificationGuid = Guid.NewGuid()
+                EmailVerificationGuid = Guid.NewGuid(),
+                DateEmailVerified = null
             });
+            await dataContext.SaveChangesAsync();
+            return Ok();
+        }
+
+        [HttpPost, Route("UpdateRegistration")]
+        public async Task<IActionResult> UpdateRegistration(RegisterUpdate registration)
+        {
+            string userSalt = Guid.NewGuid().ToString();
+            string pepper = GetPepper();
+            if (string.IsNullOrEmpty(pepper))
+                return StatusCode(500);//the user should not be informed that the pepper is misconfigured
+
+            //Check if user with email exists
+            var foundUser = await dataContext.Users.FirstOrDefaultAsync(u => u.Email == registration.Email);
+            if (foundUser == null)
+                return StatusCode(404);//TODO: consider a different response when update registration is called with an invalid email
+
+            //verify old password
+            string seasonedLoginPassword = SeasonPassword(registration.OldPassword, foundUser.Salt, pepper);
+            if (!BCrypt.Net.BCrypt.Verify(seasonedLoginPassword, foundUser.PasswordHash))
+                return StatusCode(400);//TODO: consider a different response code for invalid password in update registration request
+
+
+            //apply update request
+            string seasonedPassword = SeasonPassword(registration.NewPassword, userSalt, pepper);
+            string passwordHash = HashPassword(seasonedPassword);
+            foundUser.PasswordHash = passwordHash;
+            foundUser.Salt = userSalt;
+            foundUser.Name = $"{registration.FirstName} {registration.LastName}";
+            dataContext.Users.Update(foundUser);
             await dataContext.SaveChangesAsync();
             return Ok();
         }
