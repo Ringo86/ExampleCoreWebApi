@@ -1,4 +1,5 @@
 ﻿using Data;
+using ExampleCoreWebAPI.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Cors;
 using Microsoft.AspNetCore.Http;
@@ -21,13 +22,15 @@ namespace ExampleCoreWebAPI.Controllers
     {
         private readonly IConfiguration config;
         private readonly MainDataContext dataContext;
+        private readonly IEmailService emailService;
 
         private const string BEARER_SPACE = "Bearer ";
 
-        public AccountController(IConfiguration config, MainDataContext dataContext)
+        public AccountController(IConfiguration config, MainDataContext dataContext, IEmailService emailService)
         {
             this.config = config;
             this.dataContext = dataContext;
+            this.emailService = emailService;
         }
 
         [HttpPost, Route("login")]
@@ -76,10 +79,11 @@ namespace ExampleCoreWebAPI.Controllers
 
             //Check if user with email exists
             if (await dataContext.Users.AnyAsync(u => u.Email == registration.Email))
-                return StatusCode(409, "A user with that email already exists");//409 = conflict
+                return Conflict("An account with that email already exists");
 
             string seasonedPassword = SeasonPassword(registration.Password, userSalt, pepper);
             string passwordHash = HashPassword(seasonedPassword);
+            Guid emailVerificationGuid = Guid.NewGuid();
             await dataContext.Users.AddAsync(new User()
             {
                 FirstName = registration.FirstName,
@@ -88,10 +92,17 @@ namespace ExampleCoreWebAPI.Controllers
                 PasswordHash = passwordHash,
                 Salt = userSalt,
                 DateCreated = DateTime.Now,
-                EmailVerificationGuid = Guid.NewGuid(),
+                EmailVerificationGuid = emailVerificationGuid,
                 DateEmailVerified = null
             });
             await dataContext.SaveChangesAsync();
+
+            //send verification email
+            //TODO: move this to an email daemon
+            string fullUrl = $"{registration.ReturnUri}?guid={emailVerificationGuid}";
+            var message = new EmailMessage(new string[] { registration.Email }, "Verify Your Email Address", $"<p>Please click the following link to verify your this email for your new account: <a href=\"{ fullUrl }\" >{fullUrl}</a></p>");
+            await emailService.SendEmailAsync(message);
+
             return Ok();
         }
 
@@ -99,33 +110,9 @@ namespace ExampleCoreWebAPI.Controllers
         [Authorize]
         public async Task<ActionResult<RegistrationInfo>> GetRegistrationInfo()
         {
-            //Get token and verify this is the same account
-            var accessToken = Request.Headers[HeaderNames.Authorization];
-            string bearerHeader = accessToken.FirstOrDefault(t => t.StartsWith(BEARER_SPACE));
-            if (bearerHeader == null)
+            string email = await GetEmailFromValidClaimsAsync();
+            if (string.IsNullOrEmpty(email))
                 return BadRequest();
-            //This validation is redundant with authentication
-            var validationResult = await new JwtSecurityTokenHandler().ValidateTokenAsync(
-                    bearerHeader.Substring(BEARER_SPACE.Length),
-                    new TokenValidationParameters()
-                    {
-                        ValidateIssuer = true,
-                        ValidateAudience = true,
-                        ValidateLifetime = true,
-                        ValidateIssuerSigningKey = true,
-                        ValidIssuer = config["Jwt:Issuer"],
-                        ValidAudience = config["Jwt:Audience"],
-                        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(config["Jwt:Key"])),
-                        ClockSkew = TimeSpan.Zero
-                    });
-            if (!validationResult.IsValid)
-                return BadRequest(); //this should never happen unless authentication has failed
-
-            object emailClaimObject = validationResult.Claims["Email"];
-            if (emailClaimObject == null)
-                return BadRequest(); //this should never happen unless the email isn't put in the claims anymore
-
-            string email = (string)emailClaimObject;
             var foundUser = dataContext.Users.FirstOrDefault(u => u.Email == email);
             if (foundUser == null)
                 return BadRequest();
@@ -175,13 +162,16 @@ namespace ExampleCoreWebAPI.Controllers
         }
 
         [HttpPost, Route("verifyEmail")]
-        [Authorize]
+        //TODO: have to change the app so it can login while trying to verify email link, then re-enable [Authorize] here
+        //[Authorize]
         public async Task<IActionResult> VerifyEmail(Guid secretGuid)
         {
             //lookup guid in DB and flag account as email verified
-            var user = await dataContext.Users.FirstOrDefaultAsync(u => u.EmailVerificationGuid.Equals(secretGuid));
-            if (user == null)//TODO: maybe waste some time here for security since the email verification request was not from a valid source
-                return StatusCode(400);
+            var user = await dataContext.Users.FirstOrDefaultAsync(u => 
+                    u.EmailVerificationGuid.Equals(secretGuid) 
+                    && u.DateEmailVerified == null);
+            if (user == null)
+                return BadRequest();
 
             user.DateEmailVerified = DateTime.Now;
             await dataContext.SaveChangesAsync();
@@ -236,13 +226,13 @@ namespace ExampleCoreWebAPI.Controllers
         }
 
         //ONLY UNCOMMENT WHEN YOU WANT TO CLEAR USERS
-        //[HttpPost, Route("deletealllogins")]
-        //[Authorize]
-        //public async Task<IActionResult> DeleteAllLogins()
-        //{
-        //    await dataContext.Users.ExecuteDeleteAsync();
-        //    return Ok();
-        //}
+        [HttpPost, Route("deletealllogins")]
+        [Authorize]
+        public async Task<IActionResult> DeleteAllLogins()
+        {
+            await dataContext.Users.ExecuteDeleteAsync();
+            return Ok();
+        }
 
         private async Task<bool> VerifyLogin(Login login)
         {
@@ -279,6 +269,37 @@ namespace ExampleCoreWebAPI.Controllers
         private static string HashPassword(string seasonedPassword)
         {
             return BCrypt.Net.BCrypt.HashPassword(seasonedPassword, 14); //work factor of 14 takes ~1 second to verify 11/30/22
+        }
+
+        private async Task<string?> GetEmailFromValidClaimsAsync()
+        {
+            //Get token and verify this is the same account
+            var accessToken = Request.Headers[HeaderNames.Authorization];
+            string bearerHeader = accessToken.FirstOrDefault(t => t.StartsWith(BEARER_SPACE));
+            if (bearerHeader == null)
+                return null;
+            //This validation is redundant with authentication
+            var validationResult = await new JwtSecurityTokenHandler().ValidateTokenAsync(
+                    bearerHeader.Substring(BEARER_SPACE.Length),
+                    new TokenValidationParameters()
+                    {
+                        ValidateIssuer = true,
+                        ValidateAudience = true,
+                        ValidateLifetime = true,
+                        ValidateIssuerSigningKey = true,
+                        ValidIssuer = config["Jwt:Issuer"],
+                        ValidAudience = config["Jwt:Audience"],
+                        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(config["Jwt:Key"])),
+                        ClockSkew = TimeSpan.Zero
+                    });
+            if (!validationResult.IsValid)
+                return null; //this should never happen unless authentication has failed
+
+            object emailClaimObject = validationResult.Claims["Email"];
+            if (emailClaimObject == null)
+                return null; //this should never happen unless the email isn't put in the claims anymore
+
+            return emailClaimObject as string;
         }
     }
 }

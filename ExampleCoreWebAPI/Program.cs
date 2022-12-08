@@ -1,8 +1,10 @@
 using Data;
+using ExampleCoreWebAPI.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using Shared;
 using System.Text;
 
 const string ExampleAllowSpecificOrigins = "_exampleAllowSpecificOrigins";
@@ -20,6 +22,10 @@ builder.Services.AddCors(options =>
             .WithOrigins("https://localhost:7106");
         });
 });
+
+builder.Services.AddSingleton(builder.Configuration
+        .GetSection("EmailConfiguration")
+        .Get<EmailConfiguration>());
 
 builder.Services.AddControllers();
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
@@ -52,6 +58,8 @@ builder.Services.AddSwaggerGen(option =>
         }
     });
 });
+
+builder.Services.AddScoped<IEmailService, EmailService>();
 
 builder.Services.AddDbContext<MainDataContext>(options =>
 {
