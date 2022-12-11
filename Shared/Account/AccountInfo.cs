@@ -4,9 +4,9 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace Shared
+namespace Shared.Account
 {
-    public class RegistrationInfo
+    public class AccountInfo
     {
         public string Email { get; set; }
 

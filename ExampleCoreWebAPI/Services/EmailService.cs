@@ -6,13 +6,14 @@ namespace ExampleCoreWebAPI.Services
 {
     public interface IEmailService
     {
+        EmailConfiguration emailConfig { get; }
         void SendEmail(EmailMessage message);
         Task SendEmailAsync(EmailMessage message);
     }
 
     public class EmailService: IEmailService
     {
-        private readonly EmailConfiguration emailConfig;
+        public EmailConfiguration emailConfig { get; private set; }
         public EmailService(EmailConfiguration emailConfig)
         {
             this.emailConfig = emailConfig;

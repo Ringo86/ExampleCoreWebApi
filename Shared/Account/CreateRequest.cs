@@ -5,9 +5,9 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace Shared
+namespace Shared.Account
 {
-    public class RegisterNewAccount
+    public class CreateRequest
     {
         [Required]
         public string Email { get; set; }
@@ -20,7 +20,5 @@ namespace Shared
         public string FirstName { get; set; }
         [Required]
         public string LastName { get; set; }
-        [Required]
-        public string ReturnUri { get; set; }
     }
 }

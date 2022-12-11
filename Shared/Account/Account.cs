@@ -7,14 +7,13 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace Shared
+namespace Shared.Account
 {
-    //TODO: make email unique in DB
-    //[Index(nameof(Email), IsUnique=true]
-    public class User
+    //This is a table definition
+    public class Account
     {
-        public int ID { get; set; }
-        
+        public Guid ID { get; set; }
+
         [StringLength(450)]
         public string Email { get; set; }
         public string FirstName { get; set; }
@@ -27,5 +26,8 @@ namespace Shared
         public DateTime? DateEmailVerified { get; set; }
         public Guid PasswordResetGuid { get; set; }
         public DateTime? PasswordResetRequestExpiration { get; set; }
+
+        public ICollection<Role> Roles { get; set; }
+        public List<AccountRole> AccountRoles { get; set; }
     }
 }

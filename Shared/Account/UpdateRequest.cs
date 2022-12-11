@@ -5,9 +5,9 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace Shared
+namespace Shared.Account
 {
-    public class RegisterUpdate
+    public class UpdateRequest
     {
         [Required]
         public string Email { get; set; }

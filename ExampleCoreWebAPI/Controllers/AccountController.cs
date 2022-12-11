@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.Net.Http.Headers;
 using Shared;
+using Shared.Account;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
@@ -34,20 +35,26 @@ namespace ExampleCoreWebAPI.Controllers
         }
 
         [HttpPost, Route("login")]
-        public async Task<IActionResult> Login(Login login)
+        public async Task<IActionResult> Login(LoginRequest loginRequest)
         {
             try
             {
                 //pre-validate credentials
-                if (string.IsNullOrEmpty(login.Email) || string.IsNullOrEmpty(login.Password))
+                if (string.IsNullOrEmpty(loginRequest.Email) || string.IsNullOrEmpty(loginRequest.Password))
                     return BadRequest("Email and/or Password not specified");
 
-                if (await VerifyLogin(login))
+                if (await VerifyLogin(loginRequest))
                 {
                     var jwtKeyBytes = Encoding.ASCII.GetBytes(config["Jwt:Key"]);
 
                     List<Claim> claims = new List<Claim>();
-                    claims.Add(new Claim("Email", login.Email));
+                    claims.Add(new Claim("Email", loginRequest.Email));
+                    var roles = await GetRoles(loginRequest.Email);
+                    if(roles != null && roles.Count>0)
+                        foreach (var role in roles)
+                        {
+                            claims.Add(new Claim(ClaimTypes.Role, role.Name));
+                        }
                     var secretKey = new SymmetricSecurityKey(jwtKeyBytes);
                     //TODO: in the future change to RS256 asymmetric encryption for improved security
                     var signinCredentials = new SigningCredentials(secretKey, SecurityAlgorithms.HmacSha256);
@@ -66,31 +73,31 @@ namespace ExampleCoreWebAPI.Controllers
             {
                 return BadRequest("An error occurred in generating the token");
             }
-            return Unauthorized();
+            return BadRequest("Email and/or Password invalid");
         }
 
-        [HttpPost, Route("register")]
-        public async Task<IActionResult> Register(RegisterNewAccount registration)
+        [HttpPost, Route("create")]
+        public async Task<IActionResult> Create(CreateRequest createRequest)
         {
-            string userSalt = Guid.NewGuid().ToString();
+            string Accountsalt = Guid.NewGuid().ToString();
             string pepper = GetPepper();
             if (string.IsNullOrEmpty(pepper))
-                return StatusCode(500);//the user should not be informed that the pepper is misconfigured
+                return StatusCode(500);//the account should not be informed that the pepper is misconfigured
 
-            //Check if user with email exists
-            if (await dataContext.Users.AnyAsync(u => u.Email == registration.Email))
+            //Check if account with email exists
+            if (await dataContext.Accounts.AnyAsync(u => u.Email == createRequest.Email))
                 return Conflict("An account with that email already exists");
 
-            string seasonedPassword = SeasonPassword(registration.Password, userSalt, pepper);
+            string seasonedPassword = SeasonPassword(createRequest.Password, Accountsalt, pepper);
             string passwordHash = HashPassword(seasonedPassword);
             Guid emailVerificationGuid = Guid.NewGuid();
-            await dataContext.Users.AddAsync(new User()
+            await dataContext.Accounts.AddAsync(new Account()
             {
-                FirstName = registration.FirstName,
-                LastName = registration.LastName,
-                Email = registration.Email,
+                FirstName = createRequest.FirstName,
+                LastName = createRequest.LastName,
+                Email = createRequest.Email,
                 PasswordHash = passwordHash,
-                Salt = userSalt,
+                Salt = Accountsalt,
                 DateCreated = DateTime.Now,
                 EmailVerificationGuid = emailVerificationGuid,
                 DateEmailVerified = null
@@ -99,64 +106,64 @@ namespace ExampleCoreWebAPI.Controllers
 
             //send verification email
             //TODO: move this to an email daemon
-            string fullUrl = $"{registration.ReturnUri}?guid={emailVerificationGuid}";
-            var message = new EmailMessage(new string[] { registration.Email }, "Verify Your Email Address", $"<p>Please click the following link to verify your this email for your new account: <a href=\"{ fullUrl }\" >{fullUrl}</a></p>");
+            string fullUrl = $"{config["AppUrl"]}/account/verifyEmail?guid={emailVerificationGuid}";
+            var message = new EmailMessage(new string[] { createRequest.Email }, "Verify Your Email Address", $"<p>Please click the following link to verify your this email for your new account: <a href=\"{ fullUrl }\" >{fullUrl}</a></p>");
             await emailService.SendEmailAsync(message);
 
             return Ok();
         }
 
-        [HttpGet, Route("getRegistrationInfo")]
-        [Authorize]
-        public async Task<ActionResult<RegistrationInfo>> GetRegistrationInfo()
+        [HttpGet, Route("getInfo")]
+        [Authorize(Roles = "ClaimedRole")]
+        public async Task<ActionResult<AccountInfo>> GetInfo()
         {
             string email = await GetEmailFromValidClaimsAsync();
             if (string.IsNullOrEmpty(email))
                 return BadRequest();
-            var foundUser = dataContext.Users.FirstOrDefault(u => u.Email == email);
-            if (foundUser == null)
+            var foundAccount = dataContext.Accounts.FirstOrDefault(u => u.Email == email);
+            if (foundAccount == null)
                 return BadRequest();
 
             //return only the appropriate fields
-            return new RegistrationInfo()
+            return new AccountInfo()
             {
-                Email = foundUser.Email,
-                FirstName = foundUser.FirstName,
-                LastName = foundUser.LastName
+                Email = foundAccount.Email,
+                FirstName = foundAccount.FirstName,
+                LastName = foundAccount.LastName
             };
         }
 
-        [HttpPut, Route("updateRegistration")]
+        [HttpPut, Route("update")]
         [Authorize]
-        public async Task<IActionResult> UpdateRegistration(RegisterUpdate registration)
+        public async Task<IActionResult> Update(UpdateRequest updateRequest)
         {
             string pepper = GetPepper();
             if (string.IsNullOrEmpty(pepper))
-                return StatusCode(500);//the user should not be informed that the pepper is misconfigured
+                return StatusCode(500);//the account should not be informed that the pepper is misconfigured
 
-            //Check if user with email exists
-            var foundUser = await dataContext.Users.FirstOrDefaultAsync(u => u.Email == registration.Email);
-            if (foundUser == null)
+            //Check if account with email exists
+            var foundAccount = await dataContext.Accounts.FirstOrDefaultAsync(u => u.Email == updateRequest.Email);
+            if (foundAccount == null)
                 return BadRequest();
 
             //verify old password
-            string seasonedLoginPassword = SeasonPassword(registration.OldPassword, foundUser.Salt, pepper);
-            if (!BCrypt.Net.BCrypt.Verify(seasonedLoginPassword, foundUser.PasswordHash))
+            string seasonedLoginPassword = SeasonPassword(updateRequest.OldPassword, foundAccount.Salt, pepper);
+            if (!BCrypt.Net.BCrypt.Verify(seasonedLoginPassword, foundAccount.PasswordHash))
                 return BadRequest();
 
             //apply update request
             //TODO: validate new password complexity
-            if (!string.IsNullOrEmpty(registration.NewPassword))
+            if (!string.IsNullOrEmpty(updateRequest.NewPassword))
             {
-                string userSalt = Guid.NewGuid().ToString();
-                string seasonedPassword = SeasonPassword(registration.NewPassword, userSalt, pepper);
+                string Accountsalt = Guid.NewGuid().ToString();
+                string seasonedPassword = SeasonPassword(updateRequest.NewPassword, Accountsalt, pepper);
                 string passwordHash = HashPassword(seasonedPassword);
-                foundUser.PasswordHash = passwordHash;
-                foundUser.Salt = userSalt;
+                foundAccount.PasswordHash = passwordHash;
+                foundAccount.Salt = Accountsalt;
             }
-            foundUser.FirstName = registration.FirstName;
-            foundUser.LastName = registration.LastName;
-            dataContext.Users.Update(foundUser);
+            foundAccount.FirstName = updateRequest.FirstName;
+            foundAccount.LastName = updateRequest.LastName;
+            dataContext.Accounts.Update(foundAccount);
             await dataContext.SaveChangesAsync();
             return Ok();
         }
@@ -167,13 +174,13 @@ namespace ExampleCoreWebAPI.Controllers
         public async Task<IActionResult> VerifyEmail(Guid secretGuid)
         {
             //lookup guid in DB and flag account as email verified
-            var user = await dataContext.Users.FirstOrDefaultAsync(u => 
+            var account = await dataContext.Accounts.FirstOrDefaultAsync(u => 
                     u.EmailVerificationGuid.Equals(secretGuid) 
                     && u.DateEmailVerified == null);
-            if (user == null)
+            if (account == null)
                 return BadRequest();
 
-            user.DateEmailVerified = DateTime.Now;
+            account.DateEmailVerified = DateTime.Now;
             await dataContext.SaveChangesAsync();
             return Ok();
         }
@@ -182,71 +189,110 @@ namespace ExampleCoreWebAPI.Controllers
         public async Task<IActionResult> RequestPasswordReset(string email)
         {
             //lookup email in DB and flag for temporary reset with emailed Guid
-            var user = await dataContext.Users.FirstOrDefaultAsync(u => u.Email.Equals(email));
-            if (user == null)
-                return Ok();//return OK whether or not the user account was found. Prevent confirming accounts exist
+            var account = await dataContext.Accounts.FirstOrDefaultAsync(u => u.Email.Equals(email));
+            if (account == null)
+                return Ok();//return OK whether or not the account account was found. Prevent confirming accounts exist
 
-            //TODO: email user password reset link (to the client app? how to properly know the url without hard configuration?)
-            user.PasswordResetGuid = Guid.NewGuid();
-            user.PasswordResetRequestExpiration = DateTime.Now.AddMinutes(5); //give them 5 minutes to use the unique link
+            //update the db with the temporary guid
+            Guid passwordResetGuid = Guid.NewGuid();
+            account.PasswordResetGuid = passwordResetGuid;
+            account.PasswordResetRequestExpiration = DateTime.Now.AddMinutes(5); //give them 5 minutes to use the unique link
             await dataContext.SaveChangesAsync();
+
+            //send the email with the link with guid
+            //TODO: move this to an email daemon
+            string fullUrl = $"{config["AppUrl"]}/account/resetPasswordVerified?guid={passwordResetGuid}";
+            var message = new EmailMessage(new string[] { account.Email }, "Requested Password Reset", $"<p>Click this link to reset your password: <a href=\"{fullUrl}\" >{fullUrl}</a></p>"
+                 + "<br/>This link will expire in less than 5 minutes.  If you did not request this then someone else did!");
+            await emailService.SendEmailAsync(message);
 
             return Ok();
         }
 
-        [HttpPost, Route("ResetPassword")]
-        public async Task<IActionResult> ResetPassword(Guid passwordResetGuid, string newPassword)
+        [HttpPost, Route("CheckPasswordReset")]
+        public async Task<bool> CheckPasswordReset(CheckPasswordResetRequest checkRequest)
         {
+            DateTime dateTimeNow = DateTime.Now;//need to use this so DateTime.Now is not translated to GETDATE(). We are using the webserver time not db time.
             var blankGuid = new Guid();
             //lookup email in DB and flag for temporary reset with emailed Guid
-            var user = await dataContext.Users.FirstOrDefaultAsync(u =>
-                !u.PasswordResetGuid.Equals(blankGuid)
-                && u.PasswordResetGuid.Equals(passwordResetGuid)
+            return await dataContext.Accounts.AnyAsync(u =>
+                u.Email.Equals(checkRequest.Email)
+                && !u.PasswordResetGuid.Equals(blankGuid)
+                && u.PasswordResetGuid.Equals(checkRequest.Guid)
                 && u.PasswordResetRequestExpiration != null
-                && u.PasswordResetRequestExpiration < DateTime.Now);
-            if (user == null)//TODO: maybe waste some time here for security since the ResetPassword request was not from a valid source
-                return StatusCode(400);
+                && u.PasswordResetRequestExpiration > dateTimeNow);
+        }
+
+        [HttpPost, Route("ResetPassword")]
+        public async Task<IActionResult> ResetPassword(PasswordResetRequest resetRequest)
+        {
+            DateTime dateTimeNow = DateTime.Now;//need to use this so DateTime.Now is not translated to GETDATE(). We are using the webserver time not db time.
+            var blankGuid = new Guid();
+            //lookup email in DB and flag for temporary reset with emailed Guid
+            var account = await dataContext.Accounts.FirstOrDefaultAsync(u =>
+                u.Email.Equals(resetRequest.Email)
+                && !u.PasswordResetGuid.Equals(blankGuid)
+                && u.PasswordResetGuid.Equals(resetRequest.Guid)
+                && u.PasswordResetRequestExpiration != null
+                && u.PasswordResetRequestExpiration > dateTimeNow);
+            if (account == null)//TODO: maybe waste some time here for security since the ResetPassword request was not from a valid source
+                return BadRequest();
 
             //set new password hash, salt
             string salt = Guid.NewGuid().ToString();
             string pepper = GetPepper();
             if (string.IsNullOrEmpty(pepper))
-                return StatusCode(500);//the user should not be informed that the pepper is misconfigured
-            string seasonedPassword = SeasonPassword(newPassword, salt, pepper);
+                return StatusCode(500);//the account should not be informed that the pepper is misconfigured
+            string seasonedPassword = SeasonPassword(resetRequest.Password, salt, pepper);
             string passwordHash = HashPassword(seasonedPassword);
-            user.PasswordHash = passwordHash;
-            user.Salt = salt;
+            account.PasswordHash = passwordHash;
+            account.Salt = salt;
 
             //clear ability to reset password
-            user.PasswordResetGuid = blankGuid;
-            user.PasswordResetRequestExpiration = null;
+            account.PasswordResetGuid = blankGuid;
+            account.PasswordResetRequestExpiration = null;
             await dataContext.SaveChangesAsync();
-            //TODO: email that the password was reset so they can know if this is is a breach
+
+            //email that the password was reset so they can know if this is is a breach
+            //TODO: move this to an email daemon
+            var message = new EmailMessage(new string[] { account.Email }, "Password Reset Completed", $"<p>A password reset has been completed on your account as requested.  If you did not reset your password then contact {emailService.emailConfig.From}</p>");
+            await emailService.SendEmailAsync(message);
+
             return Ok();
         }
 
-        //ONLY UNCOMMENT WHEN YOU WANT TO CLEAR USERS
-        [HttpPost, Route("deletealllogins")]
-        [Authorize]
-        public async Task<IActionResult> DeleteAllLogins()
-        {
-            await dataContext.Users.ExecuteDeleteAsync();
-            return Ok();
-        }
+        //ONLY UNCOMMENT WHEN YOU WANT TO CLEAR Accounts
+        //[HttpPost, Route("deletealllogins")]
+        //[Authorize]
+        //public async Task<IActionResult> DeleteAllLogins()
+        //{
+        //    await dataContext.Accounts.ExecuteDeleteAsync();
+        //    return Ok();
+        //}
 
-        private async Task<bool> VerifyLogin(Login login)
+        private async Task<bool> VerifyLogin(LoginRequest login)
         {
             //an acutal password verification system
-            var user = await dataContext.Users.FirstOrDefaultAsync(u => u.Email == login.Email);
-            if (user == null)
+            var account = await dataContext.Accounts.FirstOrDefaultAsync(u => u.Email == login.Email);
+            if (account == null)
                 return false;
 
             string pepper = GetPepper();
             if (string.IsNullOrEmpty(pepper))
                 return false;
 
-            string seasonedLoginPassword = SeasonPassword(login.Password, user.Salt, pepper);
-            return BCrypt.Net.BCrypt.Verify(seasonedLoginPassword, user.PasswordHash);
+            string seasonedLoginPassword = SeasonPassword(login.Password, account.Salt, pepper);
+            return BCrypt.Net.BCrypt.Verify(seasonedLoginPassword, account.PasswordHash);
+        }
+
+        private async Task<List<Role>> GetRoles(string email)
+        {
+            var account = await dataContext.Accounts
+                .Include(a => a.Roles)
+                .FirstOrDefaultAsync(a => a.Email == email);
+            if (account == null)
+                return null;
+            return account.Roles.ToList();
         }
 
         private string GetPepper()
