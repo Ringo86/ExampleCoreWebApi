@@ -114,7 +114,7 @@ namespace ExampleCoreWebAPI.Controllers
         }
 
         [HttpGet, Route("getInfo")]
-        [Authorize(Roles = "ClaimedRole")]
+        [Authorize]
         public async Task<ActionResult<AccountInfo>> GetInfo()
         {
             string email = await GetEmailFromValidClaimsAsync() ?? "";
