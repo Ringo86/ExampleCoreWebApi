@@ -14,6 +14,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Web.Http.Results;
 
 namespace ExampleCoreWebAPI.Controllers
 {
@@ -42,13 +43,14 @@ namespace ExampleCoreWebAPI.Controllers
                 //pre-validate credentials
                 if (string.IsNullOrEmpty(loginRequest.Email) || string.IsNullOrEmpty(loginRequest.Password))
                     return BadRequest("Email and/or Password not specified");
-
-                if (await VerifyLogin(loginRequest))
+                var account = await VerifyLogin(loginRequest);
+                if (account != null)
                 {
                     var jwtKeyBytes = Encoding.ASCII.GetBytes(config["Jwt:Key"]);
 
                     List<Claim> claims = new List<Claim>();
                     claims.Add(new Claim("Email", loginRequest.Email));
+                    claims.Add(new Claim(ClaimTypes.Name, account.FirstName));
                     var roles = await GetRoles(loginRequest.Email);
                     if(roles != null && roles.Count>0)
                         foreach (var role in roles)
@@ -242,7 +244,7 @@ namespace ExampleCoreWebAPI.Controllers
             string salt = Guid.NewGuid().ToString();
             string pepper = GetPepper() ?? "";
             if (string.IsNullOrEmpty(pepper))
-                return StatusCode(500);//the account should not be informed that the pepper is misconfigured
+                return StatusCode(500);//the user should not be informed that the pepper is misconfigured
             string seasonedPassword = SeasonPassword(resetRequest.Password, salt, pepper);
             string passwordHash = HashPassword(seasonedPassword);
             account.PasswordHash = passwordHash;
@@ -270,19 +272,21 @@ namespace ExampleCoreWebAPI.Controllers
         //    return Ok();
         //}
 
-        private async Task<bool> VerifyLogin(LoginRequest login)
+        private async Task<Account?> VerifyLogin(LoginRequest login)
         {
             //an acutal password verification system
             var account = await dataContext.Accounts.FirstOrDefaultAsync(u => u.Email == login.Email);
             if (account == null)
-                return false;
+                return null;
 
-            string pepper = GetPepper();
+            string pepper = GetPepper() ?? "";
             if (string.IsNullOrEmpty(pepper))
-                return false;
+                return null;
 
             string seasonedLoginPassword = SeasonPassword(login.Password, account.Salt, pepper);
-            return BCrypt.Net.BCrypt.Verify(seasonedLoginPassword, account.PasswordHash);
+            if(BCrypt.Net.BCrypt.Verify(seasonedLoginPassword, account.PasswordHash))
+                return account;
+            return null;
         }
 
         private async Task<List<Role>?> GetRoles(string email)
