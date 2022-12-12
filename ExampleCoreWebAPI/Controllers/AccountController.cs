@@ -80,7 +80,7 @@ namespace ExampleCoreWebAPI.Controllers
         public async Task<IActionResult> Create(CreateRequest createRequest)
         {
             string Accountsalt = Guid.NewGuid().ToString();
-            string pepper = GetPepper();
+            string pepper = GetPepper() ?? "";
             if (string.IsNullOrEmpty(pepper))
                 return StatusCode(500);//the account should not be informed that the pepper is misconfigured
 
@@ -117,7 +117,7 @@ namespace ExampleCoreWebAPI.Controllers
         [Authorize(Roles = "ClaimedRole")]
         public async Task<ActionResult<AccountInfo>> GetInfo()
         {
-            string email = await GetEmailFromValidClaimsAsync();
+            string email = await GetEmailFromValidClaimsAsync() ?? "";
             if (string.IsNullOrEmpty(email))
                 return BadRequest();
             var foundAccount = dataContext.Accounts.FirstOrDefault(u => u.Email == email);
@@ -137,7 +137,7 @@ namespace ExampleCoreWebAPI.Controllers
         [Authorize]
         public async Task<IActionResult> Update(UpdateRequest updateRequest)
         {
-            string pepper = GetPepper();
+            string pepper = GetPepper() ?? "";
             if (string.IsNullOrEmpty(pepper))
                 return StatusCode(500);//the account should not be informed that the pepper is misconfigured
 
@@ -201,7 +201,7 @@ namespace ExampleCoreWebAPI.Controllers
 
             //send the email with the link with guid
             //TODO: move this to an email daemon
-            string fullUrl = $"{config["AppUrl"]}/account/resetPasswordVerified?guid={passwordResetGuid}";
+            string fullUrl = $"{config["AppUrl"]}/account/resetPasswordVerified?guid={passwordResetGuid}" ?? "";
             var message = new EmailMessage(new string[] { account.Email }, "Requested Password Reset", $"<p>Click this link to reset your password: <a href=\"{fullUrl}\" >{fullUrl}</a></p>"
                  + "<br/>This link will expire in less than 5 minutes.  If you did not request this then someone else did!");
             await emailService.SendEmailAsync(message);
@@ -240,7 +240,7 @@ namespace ExampleCoreWebAPI.Controllers
 
             //set new password hash, salt
             string salt = Guid.NewGuid().ToString();
-            string pepper = GetPepper();
+            string pepper = GetPepper() ?? "";
             if (string.IsNullOrEmpty(pepper))
                 return StatusCode(500);//the account should not be informed that the pepper is misconfigured
             string seasonedPassword = SeasonPassword(resetRequest.Password, salt, pepper);
@@ -285,7 +285,7 @@ namespace ExampleCoreWebAPI.Controllers
             return BCrypt.Net.BCrypt.Verify(seasonedLoginPassword, account.PasswordHash);
         }
 
-        private async Task<List<Role>> GetRoles(string email)
+        private async Task<List<Role>?> GetRoles(string email)
         {
             var account = await dataContext.Accounts
                 .Include(a => a.Roles)
@@ -295,9 +295,9 @@ namespace ExampleCoreWebAPI.Controllers
             return account.Roles.ToList();
         }
 
-        private string GetPepper()
+        private string? GetPepper()
         {
-            string pepper = config["Security:Pepper"];
+            string pepper = config["Security:Pepper"] ?? "";
             if (string.IsNullOrEmpty(pepper))
             {
                 //TODO: log pepper not found error somewhere useful
@@ -321,8 +321,8 @@ namespace ExampleCoreWebAPI.Controllers
         {
             //Get token and verify this is the same account
             var accessToken = Request.Headers[HeaderNames.Authorization];
-            string bearerHeader = accessToken.FirstOrDefault(t => t.StartsWith(BEARER_SPACE));
-            if (bearerHeader == null)
+            string bearerHeader = accessToken.FirstOrDefault(t => t.StartsWith(BEARER_SPACE)) ?? "";
+            if (string.IsNullOrEmpty(bearerHeader))
                 return null;
             //This validation is redundant with authentication
             var validationResult = await new JwtSecurityTokenHandler().ValidateTokenAsync(
