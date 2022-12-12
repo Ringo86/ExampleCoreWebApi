@@ -1,4 +1,5 @@
 using Data;
+using ExampleCoreWebAPI.Helpers;
 using ExampleCoreWebAPI.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -69,19 +70,8 @@ builder.Services.AddDbContext<MainDataContext>(options =>
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             .AddJwtBearer(options =>
             {
-                options.RequireHttpsMetadata = false;
                 options.SaveToken = true;
-                options.TokenValidationParameters = new TokenValidationParameters
-                {
-                    ValidateIssuer = true,
-                    ValidateAudience = true,
-                    ValidateLifetime = true,
-                    ValidateIssuerSigningKey = true,
-                    ValidIssuer = builder.Configuration["Jwt:Issuer"],
-                    ValidAudience = builder.Configuration["Jwt:Audience"],
-                    IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"])),
-                    ClockSkew = TimeSpan.Zero
-                };
+                options.TokenValidationParameters = JwtHelper.GetTokenValidationParameters(builder.Configuration);
             });
 
 var app = builder.Build();

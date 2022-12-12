@@ -1,4 +1,5 @@
 ﻿using Data;
+using ExampleCoreWebAPI.Helpers;
 using ExampleCoreWebAPI.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Cors;
@@ -46,7 +47,7 @@ namespace ExampleCoreWebAPI.Controllers
                 var account = await VerifyLogin(loginRequest);
                 if (account != null)
                 {
-                    var jwtKeyBytes = Encoding.ASCII.GetBytes(config["Jwt:Key"]);
+                    
 
                     List<Claim> claims = new List<Claim>();
                     claims.Add(new Claim("Email", loginRequest.Email));
@@ -57,15 +58,12 @@ namespace ExampleCoreWebAPI.Controllers
                         {
                             claims.Add(new Claim(ClaimTypes.Role, role.Name));
                         }
-                    var secretKey = new SymmetricSecurityKey(jwtKeyBytes);
-                    //TODO: in the future change to RS256 asymmetric encryption for improved security
-                    var signinCredentials = new SigningCredentials(secretKey, SecurityAlgorithms.HmacSha256);
                     var jwtSecurityToken = new JwtSecurityToken(
                         issuer: config["Jwt:Issuer"],
                         audience: config["Jwt:Audience"],
                         claims: claims,
-                        expires: DateTime.Now.AddMinutes(10),
-                        signingCredentials: signinCredentials
+                        expires: DateTime.Now.AddMinutes(5),
+                        signingCredentials: JwtHelper.GetSigningCredentials(config)
                     );
                     string token = new JwtSecurityTokenHandler().WriteToken(jwtSecurityToken);
                     return Ok(JsonSerializer.Serialize(new { Token = token }));
@@ -331,17 +329,7 @@ namespace ExampleCoreWebAPI.Controllers
             //This validation is redundant with authentication
             var validationResult = await new JwtSecurityTokenHandler().ValidateTokenAsync(
                     bearerHeader.Substring(BEARER_SPACE.Length),
-                    new TokenValidationParameters()
-                    {
-                        ValidateIssuer = true,
-                        ValidateAudience = true,
-                        ValidateLifetime = true,
-                        ValidateIssuerSigningKey = true,
-                        ValidIssuer = config["Jwt:Issuer"],
-                        ValidAudience = config["Jwt:Audience"],
-                        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(config["Jwt:Key"])),
-                        ClockSkew = TimeSpan.Zero
-                    });
+                    JwtHelper.GetTokenValidationParameters(config));
             if (!validationResult.IsValid)
                 return null; //this should never happen unless authentication has failed
 
