@@ -45,35 +45,32 @@ namespace ExampleCoreWebAPI.Controllers
                 if (string.IsNullOrEmpty(loginRequest.Email) || string.IsNullOrEmpty(loginRequest.Password))
                     return BadRequest("Email and/or Password not specified");
                 var account = await VerifyLogin(loginRequest);
-                if (account != null)
-                {
-                    
+                if (account == null)
+                    return BadRequest("Email and/or Password invalid");
 
-                    List<Claim> claims = new List<Claim>();
-                    claims.Add(new Claim("Email", loginRequest.Email));
-                    claims.Add(new Claim(ClaimTypes.Name, account.FirstName));
-                    var roles = await GetRoles(loginRequest.Email);
-                    if(roles != null && roles.Count>0)
-                        foreach (var role in roles)
-                        {
-                            claims.Add(new Claim(ClaimTypes.Role, role.Name));
-                        }
-                    var jwtSecurityToken = new JwtSecurityToken(
-                        issuer: config["Jwt:Issuer"],
-                        audience: config["Jwt:Audience"],
-                        claims: claims,
-                        expires: DateTime.Now.AddMinutes(5),
-                        signingCredentials: JwtHelper.GetSigningCredentials(config)
-                    );
-                    string token = new JwtSecurityTokenHandler().WriteToken(jwtSecurityToken);
-                    return Ok(JsonSerializer.Serialize(new { Token = token }));
-                }
+
+                List<Claim> claims = new List<Claim>();
+                claims.Add(new Claim("Email", loginRequest.Email));
+                claims.Add(new Claim(ClaimTypes.Name, account.FirstName));
+                var roles = await GetRoles(loginRequest.Email);
+                if (roles != null && roles.Count > 0)
+                    foreach (var role in roles)
+                    {
+                        claims.Add(new Claim(ClaimTypes.Role, role.Name));
+                    }
+                var jwtSecurityToken = new JwtSecurityToken(
+                    issuer: config["Jwt:Issuer"],
+                    audience: config["Jwt:Audience"],
+                    claims: claims,
+                    expires: DateTime.Now.AddMinutes(5),
+                    signingCredentials: JwtHelper.GetSigningCredentials(config));
+                string token = new JwtSecurityTokenHandler().WriteToken(jwtSecurityToken);
+                return Ok(JsonSerializer.Serialize(new { Token = token }));
             }
             catch
             {
                 return BadRequest("An error occurred in generating the token");
             }
-            return BadRequest("Email and/or Password invalid");
         }
 
         [HttpPost, Route("create")]
@@ -107,7 +104,7 @@ namespace ExampleCoreWebAPI.Controllers
             //send verification email
             //TODO: move this to an email daemon
             string fullUrl = $"{config["AppUrl"]}/account/verifyEmail?guid={emailVerificationGuid}";
-            var message = new EmailMessage(new string[] { createRequest.Email }, "Verify Your Email Address", $"<p>Please click the following link to verify your this email for your new account: <a href=\"{ fullUrl }\" >{fullUrl}</a></p>");
+            var message = new EmailMessage(new string[] { createRequest.Email }, "Verify Your Email Address", $"<p>Please click the following link to verify your this email for your new account: <a href=\"{fullUrl}\" >{fullUrl}</a></p>");
             await emailService.SendEmailAsync(message);
 
             return Ok();
@@ -174,8 +171,8 @@ namespace ExampleCoreWebAPI.Controllers
         public async Task<IActionResult> VerifyEmail(Guid secretGuid)
         {
             //lookup guid in DB and flag account as email verified
-            var account = await dataContext.Accounts.FirstOrDefaultAsync(u => 
-                    u.EmailVerificationGuid.Equals(secretGuid) 
+            var account = await dataContext.Accounts.FirstOrDefaultAsync(u =>
+                    u.EmailVerificationGuid.Equals(secretGuid)
                     && u.DateEmailVerified == null);
             if (account == null)
                 return BadRequest();
@@ -282,7 +279,7 @@ namespace ExampleCoreWebAPI.Controllers
                 return null;
 
             string seasonedLoginPassword = SeasonPassword(login.Password, account.Salt, pepper);
-            if(BCrypt.Net.BCrypt.Verify(seasonedLoginPassword, account.PasswordHash))
+            if (BCrypt.Net.BCrypt.Verify(seasonedLoginPassword, account.PasswordHash))
                 return account;
             return null;
         }

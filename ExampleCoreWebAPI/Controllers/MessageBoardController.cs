@@ -8,7 +8,7 @@ namespace ExampleCoreWebAPI.Controllers
     [ApiController]
     public class MessageBoardController : ControllerBase
     {
-        [HttpGet, Route("Get")]
+        [HttpPost, Route("GetMessage")]
         public ActionResult<int> GetMessage(GetMessageRequest getRequest) 
         {
             //this is just for testing errors right now
