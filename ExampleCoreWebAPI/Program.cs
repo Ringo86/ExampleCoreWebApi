@@ -1,11 +1,15 @@
 using Data;
 using ExampleCoreWebAPI.Helpers;
 using ExampleCoreWebAPI.Services;
+using ExampleCoreWebAPI.Validation;
+using FluentValidation;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Shared;
+using Shared.Account;
 using System.Text;
 
 const string ExampleAllowSpecificOrigins = "_exampleAllowSpecificOrigins";
@@ -60,7 +64,10 @@ builder.Services.AddSwaggerGen(option =>
     });
 });
 
+builder.Services.AddScoped<IValidator<LoginRequest>, LoginValidator>();
+
 builder.Services.AddScoped<IEmailService, EmailService>();
+builder.Services.AddScoped<IAccountService, AccountService>();
 
 builder.Services.AddDbContext<MainDataContext>(options =>
 {
@@ -73,6 +80,14 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 options.SaveToken = true;
                 options.TokenValidationParameters = JwtHelper.GetTokenValidationParameters(builder.Configuration);
             });
+
+//Disable automatic model validation
+builder.Services.Configure<ApiBehaviorOptions>(options =>
+{
+    options.SuppressModelStateInvalidFilter = true;
+});
+
+SecurityHelper.Initialize(builder.Configuration);
 
 var app = builder.Build();
 

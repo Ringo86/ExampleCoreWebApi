@@ -1,6 +1,9 @@
 ﻿using Data;
 using ExampleCoreWebAPI.Helpers;
 using ExampleCoreWebAPI.Services;
+using ExampleCoreWebAPI.Validation;
+using FluentValidation;
+using LanguageExt.Common;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Cors;
 using Microsoft.AspNetCore.Http;
@@ -26,58 +29,63 @@ namespace ExampleCoreWebAPI.Controllers
         private readonly IConfiguration config;
         private readonly MainDataContext dataContext;
         private readonly IEmailService emailService;
-
+        private readonly IAccountService accountService;
         private const string BEARER_SPACE = "Bearer ";
 
-        public AccountController(IConfiguration config, MainDataContext dataContext, IEmailService emailService)
+        public AccountController(IConfiguration config, MainDataContext dataContext, IEmailService emailService, IAccountService accountService)
         {
             this.config = config;
             this.dataContext = dataContext;
             this.emailService = emailService;
+            this.accountService = accountService;
         }
 
         [HttpPost, Route("login")]
         public async Task<IActionResult> Login(LoginRequest loginRequest)
         {
-            try
+            var loginResult = await accountService.Login(loginRequest);
+            return loginResult.Match<IActionResult>(a =>
             {
-                //pre-validate credentials
-                if (string.IsNullOrEmpty(loginRequest.Email) || string.IsNullOrEmpty(loginRequest.Password))
-                    return BadRequest("Email and/or Password not specified");
-                var account = await VerifyLogin(loginRequest);
-                if (account == null)
-                    return BadRequest("Email and/or Password invalid");
-
-
-                List<Claim> claims = new List<Claim>();
-                claims.Add(new Claim("Email", loginRequest.Email));
-                claims.Add(new Claim(ClaimTypes.Name, account.FirstName));
-                var roles = await GetRoles(loginRequest.Email);
-                if (roles != null && roles.Count > 0)
-                    foreach (var role in roles)
-                    {
-                        claims.Add(new Claim(ClaimTypes.Role, role.Name));
-                    }
-                var jwtSecurityToken = new JwtSecurityToken(
-                    issuer: config["Jwt:Issuer"],
-                    audience: config["Jwt:Audience"],
-                    claims: claims,
-                    expires: DateTime.Now.AddMinutes(5),
-                    signingCredentials: JwtHelper.GetSigningCredentials(config));
-                string token = new JwtSecurityTokenHandler().WriteToken(jwtSecurityToken);
-                return Ok(JsonSerializer.Serialize(new { Token = token }));
-            }
-            catch
+                try
+                {
+                    List<Claim> claims = new List<Claim>();
+                    claims.Add(new Claim("Email", a.Email));
+                    claims.Add(new Claim(ClaimTypes.Name, a.FirstName));
+                    var roles = GetRoles(a.Email).Result;//bad thread locking, used because Match is not async but a better solution should be found
+                    if (roles != null && roles.Count > 0)
+                        foreach (var role in roles)
+                        {
+                            claims.Add(new Claim(ClaimTypes.Role, role.Name));
+                        }
+                    var jwtSecurityToken = new JwtSecurityToken(
+                            issuer: config["Jwt:Issuer"],
+                            audience: config["Jwt:Audience"],
+                            claims: claims,
+                            expires: DateTime.Now.AddMinutes(5),
+                            signingCredentials: JwtHelper.GetSigningCredentials(config));
+                    string token = new JwtSecurityTokenHandler().WriteToken(jwtSecurityToken);
+                    return Ok(JsonSerializer.Serialize(new { Token = token }));
+                }
+                catch
+                {
+                    return StatusCode(500, "An error occurred in generating the token");
+                }
+            },
+            ex =>
             {
-                return BadRequest("An error occurred in generating the token");
-            }
+                if(ex is ValidationException validation)
+                {
+                    return BadRequest(validation.ToProblemDetails());
+                }
+                return BadRequest(ex.Message);
+            });
         }
 
         [HttpPost, Route("create")]
         public async Task<IActionResult> Create(CreateRequest createRequest)
         {
             string Accountsalt = Guid.NewGuid().ToString();
-            string pepper = GetPepper() ?? "";
+            string pepper = SecurityHelper.GetPepper() ?? "";
             if (string.IsNullOrEmpty(pepper))
                 return StatusCode(500);//the account should not be informed that the pepper is misconfigured
 
@@ -85,8 +93,8 @@ namespace ExampleCoreWebAPI.Controllers
             if (await dataContext.Accounts.AnyAsync(u => u.Email == createRequest.Email))
                 return Conflict("An account with that email already exists");
 
-            string seasonedPassword = SeasonPassword(createRequest.Password, Accountsalt, pepper);
-            string passwordHash = HashPassword(seasonedPassword);
+            string seasonedPassword = SecurityHelper.SeasonPassword(createRequest.Password, Accountsalt, pepper);
+            string passwordHash = SecurityHelper.HashPassword(seasonedPassword);
             Guid emailVerificationGuid = Guid.NewGuid();
             await dataContext.Accounts.AddAsync(new Account()
             {
@@ -134,7 +142,7 @@ namespace ExampleCoreWebAPI.Controllers
         [Authorize]
         public async Task<IActionResult> Update(UpdateRequest updateRequest)
         {
-            string pepper = GetPepper() ?? "";
+            string pepper = SecurityHelper.GetPepper() ?? "";
             if (string.IsNullOrEmpty(pepper))
                 return StatusCode(500);//the account should not be informed that the pepper is misconfigured
 
@@ -144,7 +152,7 @@ namespace ExampleCoreWebAPI.Controllers
                 return BadRequest();
 
             //verify old password
-            string seasonedLoginPassword = SeasonPassword(updateRequest.OldPassword, foundAccount.Salt, pepper);
+            string seasonedLoginPassword = SecurityHelper.SeasonPassword(updateRequest.OldPassword, foundAccount.Salt, pepper);
             if (!BCrypt.Net.BCrypt.Verify(seasonedLoginPassword, foundAccount.PasswordHash))
                 return BadRequest();
 
@@ -153,8 +161,8 @@ namespace ExampleCoreWebAPI.Controllers
             if (!string.IsNullOrEmpty(updateRequest.NewPassword))
             {
                 string Accountsalt = Guid.NewGuid().ToString();
-                string seasonedPassword = SeasonPassword(updateRequest.NewPassword, Accountsalt, pepper);
-                string passwordHash = HashPassword(seasonedPassword);
+                string seasonedPassword = SecurityHelper.SeasonPassword(updateRequest.NewPassword, Accountsalt, pepper);
+                string passwordHash = SecurityHelper.HashPassword(seasonedPassword);
                 foundAccount.PasswordHash = passwordHash;
                 foundAccount.Salt = Accountsalt;
             }
@@ -237,11 +245,11 @@ namespace ExampleCoreWebAPI.Controllers
 
             //set new password hash, salt
             string salt = Guid.NewGuid().ToString();
-            string pepper = GetPepper() ?? "";
+            string pepper = SecurityHelper.GetPepper() ?? "";
             if (string.IsNullOrEmpty(pepper))
                 return StatusCode(500);//the user should not be informed that the pepper is misconfigured
-            string seasonedPassword = SeasonPassword(resetRequest.Password, salt, pepper);
-            string passwordHash = HashPassword(seasonedPassword);
+            string seasonedPassword = SecurityHelper.SeasonPassword(resetRequest.Password, salt, pepper);
+            string passwordHash = SecurityHelper.HashPassword(seasonedPassword);
             account.PasswordHash = passwordHash;
             account.Salt = salt;
 
@@ -267,23 +275,6 @@ namespace ExampleCoreWebAPI.Controllers
         //    return Ok();
         //}
 
-        private async Task<Account?> VerifyLogin(LoginRequest login)
-        {
-            //an acutal password verification system
-            var account = await dataContext.Accounts.FirstOrDefaultAsync(u => u.Email == login.Email);
-            if (account == null)
-                return null;
-
-            string pepper = GetPepper() ?? "";
-            if (string.IsNullOrEmpty(pepper))
-                return null;
-
-            string seasonedLoginPassword = SeasonPassword(login.Password, account.Salt, pepper);
-            if (BCrypt.Net.BCrypt.Verify(seasonedLoginPassword, account.PasswordHash))
-                return account;
-            return null;
-        }
-
         private async Task<List<Role>?> GetRoles(string email)
         {
             var account = await dataContext.Accounts
@@ -292,28 +283,6 @@ namespace ExampleCoreWebAPI.Controllers
             if (account == null)
                 return null;
             return account.Roles.ToList();
-        }
-
-        private string? GetPepper()
-        {
-            string pepper = config["Security:Pepper"] ?? "";
-            if (string.IsNullOrEmpty(pepper))
-            {
-                //TODO: log pepper not found error somewhere useful
-                Console.WriteLine("ERROR: AUTHENTICATION MISCONFIGURATION: \"Security:Pepper\" not found in config");
-                return null;
-            }
-            return pepper;
-        }
-
-        private static string SeasonPassword(string password, string salt, string pepper)
-        {
-            return salt + password + pepper;
-        }
-
-        private static string HashPassword(string seasonedPassword)
-        {
-            return BCrypt.Net.BCrypt.HashPassword(seasonedPassword, 14); //work factor of 14 takes ~1 second to verify 11/30/22
         }
 
         private async Task<string?> GetEmailFromValidClaimsAsync()
