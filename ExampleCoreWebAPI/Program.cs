@@ -1,7 +1,7 @@
 using Data;
 using ExampleCoreWebAPI.Helpers;
 using ExampleCoreWebAPI.Services;
-using ExampleCoreWebAPI.Validation;
+using ExampleCoreWebAPI.Validation.Account;
 using FluentValidation;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Mvc;
@@ -64,7 +64,8 @@ builder.Services.AddSwaggerGen(option =>
     });
 });
 
-builder.Services.AddScoped<IValidator<LoginRequest>, LoginValidator>();
+builder.Services.AddScoped<IValidator<LoginRequest>, LoginRequestValidator>();
+builder.Services.AddScoped<IValidator<CreateRequest>, CreateRequestValidator>();
 
 builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<IAccountService, AccountService>();

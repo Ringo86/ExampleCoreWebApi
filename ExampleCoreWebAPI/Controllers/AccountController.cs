@@ -27,15 +27,14 @@ namespace ExampleCoreWebAPI.Controllers
     public class AccountController : ControllerBase
     {
         private readonly IConfiguration config;
-        private readonly MainDataContext dataContext;
+        //private readonly MainDataContext dataContext;
         private readonly IEmailService emailService;
         private readonly IAccountService accountService;
         private const string BEARER_SPACE = "Bearer ";
 
-        public AccountController(IConfiguration config, MainDataContext dataContext, IEmailService emailService, IAccountService accountService)
+        public AccountController(IConfiguration config, IEmailService emailService, IAccountService accountService)
         {
             this.config = config;
-            this.dataContext = dataContext;
             this.emailService = emailService;
             this.accountService = accountService;
         }
@@ -51,7 +50,7 @@ namespace ExampleCoreWebAPI.Controllers
                     List<Claim> claims = new List<Claim>();
                     claims.Add(new Claim("Email", a.Email));
                     claims.Add(new Claim(ClaimTypes.Name, a.FirstName));
-                    var roles = GetRoles(a.Email).Result;//bad thread locking, used because Match is not async but a better solution should be found
+                    var roles = GetRoles(a.Email).Result;//TODO: FIX thread locking, used because Match is not async but a better solution should be found
                     if (roles != null && roles.Count > 0)
                         foreach (var role in roles)
                         {
@@ -73,7 +72,7 @@ namespace ExampleCoreWebAPI.Controllers
             },
             ex =>
             {
-                if(ex is ValidationException validation)
+                if (ex is ValidationException validation)
                 {
                     return BadRequest(validation.ToProblemDetails());
                 }
@@ -84,38 +83,28 @@ namespace ExampleCoreWebAPI.Controllers
         [HttpPost, Route("create")]
         public async Task<IActionResult> Create(CreateRequest createRequest)
         {
-            string Accountsalt = Guid.NewGuid().ToString();
-            string pepper = SecurityHelper.GetPepper() ?? "";
-            if (string.IsNullOrEmpty(pepper))
-                return StatusCode(500);//the account should not be informed that the pepper is misconfigured
-
-            //Check if account with email exists
-            if (await dataContext.Accounts.AnyAsync(u => u.Email == createRequest.Email))
-                return Conflict("An account with that email already exists");
-
-            string seasonedPassword = SecurityHelper.SeasonPassword(createRequest.Password, Accountsalt, pepper);
-            string passwordHash = SecurityHelper.HashPassword(seasonedPassword);
-            Guid emailVerificationGuid = Guid.NewGuid();
-            await dataContext.Accounts.AddAsync(new Account()
+            var createResult = await accountService.CreateAsync(createRequest);
+            return createResult.Match<IActionResult>(emailVerificationGuid =>
             {
-                FirstName = createRequest.FirstName,
-                LastName = createRequest.LastName,
-                Email = createRequest.Email,
-                PasswordHash = passwordHash,
-                Salt = Accountsalt,
-                DateCreated = DateTime.Now,
-                EmailVerificationGuid = emailVerificationGuid,
-                DateEmailVerified = null
+                if (emailVerificationGuid == null)
+                    return BadRequest();
+
+                //send verification email
+                //TODO: move this to an email daemon
+                string fullUrl = $"{config["AppUrl"]}/account/verifyEmail?guid={emailVerificationGuid}";
+                var message = new EmailMessage(new string[] { createRequest.Email }, "Verify Your Email Address", $"<p>Please click the following link to verify your this email for your new account: <a href=\"{fullUrl}\" >{fullUrl}</a></p>");
+                emailService.SendEmailAsync(message).Wait();//TODO: FIX thread locking, used because Match is not async but a better solution should be found
+
+                return Ok();
+            },
+            ex =>
+            {
+                if (ex is ValidationException validation)
+                {
+                    return BadRequest(validation.ToProblemDetails());
+                }
+                return BadRequest();
             });
-            await dataContext.SaveChangesAsync();
-
-            //send verification email
-            //TODO: move this to an email daemon
-            string fullUrl = $"{config["AppUrl"]}/account/verifyEmail?guid={emailVerificationGuid}";
-            var message = new EmailMessage(new string[] { createRequest.Email }, "Verify Your Email Address", $"<p>Please click the following link to verify your this email for your new account: <a href=\"{fullUrl}\" >{fullUrl}</a></p>");
-            await emailService.SendEmailAsync(message);
-
-            return Ok();
         }
 
         [HttpGet, Route("getInfo")]
@@ -123,54 +112,20 @@ namespace ExampleCoreWebAPI.Controllers
         public async Task<ActionResult<AccountInfo>> GetInfo()
         {
             string email = await GetEmailFromValidClaimsAsync() ?? "";
-            if (string.IsNullOrEmpty(email))
+            var accountInfo = await accountService.GetInfoAsync(email);
+            if (accountInfo == null)
                 return BadRequest();
-            var foundAccount = dataContext.Accounts.FirstOrDefault(u => u.Email == email);
-            if (foundAccount == null)
-                return BadRequest();
-
-            //return only the appropriate fields
-            return new AccountInfo()
-            {
-                Email = foundAccount.Email,
-                FirstName = foundAccount.FirstName,
-                LastName = foundAccount.LastName
-            };
+            return Ok(accountInfo);
         }
 
         [HttpPut, Route("update")]
         [Authorize]
         public async Task<IActionResult> Update(UpdateRequest updateRequest)
         {
-            string pepper = SecurityHelper.GetPepper() ?? "";
-            if (string.IsNullOrEmpty(pepper))
-                return StatusCode(500);//the account should not be informed that the pepper is misconfigured
-
-            //Check if account with email exists
-            var foundAccount = await dataContext.Accounts.FirstOrDefaultAsync(u => u.Email == updateRequest.Email);
-            if (foundAccount == null)
-                return BadRequest();
-
-            //verify old password
-            string seasonedLoginPassword = SecurityHelper.SeasonPassword(updateRequest.OldPassword, foundAccount.Salt, pepper);
-            if (!BCrypt.Net.BCrypt.Verify(seasonedLoginPassword, foundAccount.PasswordHash))
-                return BadRequest();
-
-            //apply update request
-            //TODO: validate new password complexity
-            if (!string.IsNullOrEmpty(updateRequest.NewPassword))
-            {
-                string Accountsalt = Guid.NewGuid().ToString();
-                string seasonedPassword = SecurityHelper.SeasonPassword(updateRequest.NewPassword, Accountsalt, pepper);
-                string passwordHash = SecurityHelper.HashPassword(seasonedPassword);
-                foundAccount.PasswordHash = passwordHash;
-                foundAccount.Salt = Accountsalt;
-            }
-            foundAccount.FirstName = updateRequest.FirstName;
-            foundAccount.LastName = updateRequest.LastName;
-            dataContext.Accounts.Update(foundAccount);
-            await dataContext.SaveChangesAsync();
-            return Ok();
+            bool success = await accountService.UpdateAsync(updateRequest);
+            if (success)
+                return Ok();
+            return BadRequest();
         }
 
         [HttpPost, Route("verifyEmail")]
@@ -178,36 +133,22 @@ namespace ExampleCoreWebAPI.Controllers
         //[Authorize]
         public async Task<IActionResult> VerifyEmail(Guid secretGuid)
         {
-            //lookup guid in DB and flag account as email verified
-            var account = await dataContext.Accounts.FirstOrDefaultAsync(u =>
-                    u.EmailVerificationGuid.Equals(secretGuid)
-                    && u.DateEmailVerified == null);
-            if (account == null)
-                return BadRequest();
-
-            account.DateEmailVerified = DateTime.Now;
-            await dataContext.SaveChangesAsync();
-            return Ok();
+            if (await accountService.VerifyEmailAsync(secretGuid))
+                return Ok();
+            return BadRequest();
         }
 
         [HttpPost, Route("RequestPasswordReset")]
         public async Task<IActionResult> RequestPasswordReset(string email)
         {
-            //lookup email in DB and flag for temporary reset with emailed Guid
-            var account = await dataContext.Accounts.FirstOrDefaultAsync(u => u.Email.Equals(email));
-            if (account == null)
+            var passwordResetGuid = await accountService.RequestPasswordResetAsync(email);
+            if (passwordResetGuid == null)
                 return Ok();//return OK whether or not the account account was found. Prevent confirming accounts exist
-
-            //update the db with the temporary guid
-            Guid passwordResetGuid = Guid.NewGuid();
-            account.PasswordResetGuid = passwordResetGuid;
-            account.PasswordResetRequestExpiration = DateTime.Now.AddMinutes(5); //give them 5 minutes to use the unique link
-            await dataContext.SaveChangesAsync();
 
             //send the email with the link with guid
             //TODO: move this to an email daemon
             string fullUrl = $"{config["AppUrl"]}/account/resetPasswordVerified?guid={passwordResetGuid}" ?? "";
-            var message = new EmailMessage(new string[] { account.Email }, "Requested Password Reset", $"<p>Click this link to reset your password: <a href=\"{fullUrl}\" >{fullUrl}</a></p>"
+            var message = new EmailMessage(new string[] { email }, "Requested Password Reset", $"<p>Click this link to reset your password: <a href=\"{fullUrl}\" >{fullUrl}</a></p>"
                  + "<br/>This link will expire in less than 5 minutes.  If you did not request this then someone else did!");
             await emailService.SendEmailAsync(message);
 
@@ -217,50 +158,19 @@ namespace ExampleCoreWebAPI.Controllers
         [HttpPost, Route("CheckPasswordReset")]
         public async Task<bool> CheckPasswordReset(CheckPasswordResetRequest checkRequest)
         {
-            DateTime dateTimeNow = DateTime.Now;//need to use this so DateTime.Now is not translated to GETDATE(). We are using the webserver time not db time.
-            var blankGuid = new Guid();
-            //lookup email in DB and flag for temporary reset with emailed Guid
-            return await dataContext.Accounts.AnyAsync(u =>
-                u.Email.Equals(checkRequest.Email)
-                && !u.PasswordResetGuid.Equals(blankGuid)
-                && u.PasswordResetGuid.Equals(checkRequest.Guid)
-                && u.PasswordResetRequestExpiration != null
-                && u.PasswordResetRequestExpiration > dateTimeNow);
+            return await accountService.CheckPasswordResetAsync(checkRequest);
         }
 
         [HttpPost, Route("ResetPassword")]
         public async Task<IActionResult> ResetPassword(PasswordResetRequest resetRequest)
         {
-            DateTime dateTimeNow = DateTime.Now;//need to use this so DateTime.Now is not translated to GETDATE(). We are using the webserver time not db time.
-            var blankGuid = new Guid();
-            //lookup email in DB and flag for temporary reset with emailed Guid
-            var account = await dataContext.Accounts.FirstOrDefaultAsync(u =>
-                u.Email.Equals(resetRequest.Email)
-                && !u.PasswordResetGuid.Equals(blankGuid)
-                && u.PasswordResetGuid.Equals(resetRequest.Guid)
-                && u.PasswordResetRequestExpiration != null
-                && u.PasswordResetRequestExpiration > dateTimeNow);
-            if (account == null)//TODO: maybe waste some time here for security since the ResetPassword request was not from a valid source
+            bool resetSuccess = await accountService.ResetPasswordAsync(resetRequest);
+            if (!resetSuccess)
                 return BadRequest();
-
-            //set new password hash, salt
-            string salt = Guid.NewGuid().ToString();
-            string pepper = SecurityHelper.GetPepper() ?? "";
-            if (string.IsNullOrEmpty(pepper))
-                return StatusCode(500);//the user should not be informed that the pepper is misconfigured
-            string seasonedPassword = SecurityHelper.SeasonPassword(resetRequest.Password, salt, pepper);
-            string passwordHash = SecurityHelper.HashPassword(seasonedPassword);
-            account.PasswordHash = passwordHash;
-            account.Salt = salt;
-
-            //clear ability to reset password
-            account.PasswordResetGuid = blankGuid;
-            account.PasswordResetRequestExpiration = null;
-            await dataContext.SaveChangesAsync();
 
             //email that the password was reset so they can know if this is is a breach
             //TODO: move this to an email daemon
-            var message = new EmailMessage(new string[] { account.Email }, "Password Reset Completed", $"<p>A password reset has been completed on your account as requested.  If you did not reset your password then contact {emailService.emailConfig.From}</p>");
+            var message = new EmailMessage(new string[] { resetRequest.Email }, "Password Reset Completed", $"<p>A password reset has been completed on your account as requested.  If you did not reset your password then contact {emailService.emailConfig.From}</p>");
             await emailService.SendEmailAsync(message);
 
             return Ok();
@@ -277,12 +187,7 @@ namespace ExampleCoreWebAPI.Controllers
 
         private async Task<List<Role>?> GetRoles(string email)
         {
-            var account = await dataContext.Accounts
-                .Include(a => a.Roles)
-                .FirstOrDefaultAsync(a => a.Email == email);
-            if (account == null)
-                return null;
-            return account.Roles.ToList();
+            return await accountService.GetRolesAsync(email);
         }
 
         private async Task<string?> GetEmailFromValidClaimsAsync()

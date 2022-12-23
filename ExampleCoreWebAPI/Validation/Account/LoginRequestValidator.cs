@@ -2,11 +2,11 @@
 using FluentValidation.Results;
 using Shared.Account;
 
-namespace ExampleCoreWebAPI.Validation
+namespace ExampleCoreWebAPI.Validation.Account
 {
-    public class LoginValidator : AbstractValidator<LoginRequest>
+    public class LoginRequestValidator : AbstractValidator<LoginRequest>
     {
-        public LoginValidator()
+        public LoginRequestValidator()
         {
             RuleLevelCascadeMode = CascadeMode.Stop;
 

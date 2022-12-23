@@ -9,16 +9,9 @@ namespace Shared.Account
 {
     public class CreateRequest
     {
-        [Required]
         public string Email { get; set; }
-
-        [Required]
-        [MinLength(8, ErrorMessage = "The Password field must be a minimum of 8 characters")]
         public string Password { get; set; }
-
-        [Required]
         public string FirstName { get; set; }
-        [Required]
         public string LastName { get; set; }
     }
 }
